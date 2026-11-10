@@ -1,0 +1,29 @@
+[project]
+name = "page-ocr"
+version = "0.0.0"
+description = "Page image OCR (local llama-server / Modal); PDF, DjVu, or raster"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy",
+  "Pillow>=10.2,<11",
+]
+optional-dependencies = { local = [
+  "surya-ocr==0.23.0",
+  "huggingface_hub",
+], modal = [
+  "modal>=1.6,<2",
+], all = [
+  "surya-ocr==0.23.0",
+  "huggingface_hub",
+  "modal>=1.6,<2",
+] }
+
+[project.scripts]
+page-ocr = "page_ocr.install:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
