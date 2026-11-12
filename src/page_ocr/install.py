@@ -16,7 +16,7 @@ from pathlib import Path
 _DEFAULT_LLAMA_RELEASE = "b12061"
 _DEFAULT_LLAMA_PREFIX = Path("/opt/llama-cpp")
 _DEFAULT_MODEL = "datalab-to/surya-ocr-2.5-gguf"
-_DEFAULT_QUANT = "bf16"
+_DEFAULT_QUANT = "q8"
 
 _QUANT_FILES = {
     "bf16": "surya-2.5.gguf",
