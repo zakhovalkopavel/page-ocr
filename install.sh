@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Bootstrap page-ocr on a server (usable as a submodule from any project).
+# When vendored under ``…/vendor/page-ocr``, fills ``.env`` from the host project
+# ``.env`` (or ``PAGE_OCR_HOST_ENV`` / ``--from-env``) before install/deploy.
 # Examples:
 #   ./install.sh --all                      # local OCR runtime
 #   ./install.sh --local --system --llama --models

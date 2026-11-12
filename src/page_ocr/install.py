@@ -161,10 +161,101 @@ def install_models(*, model: str, quant: str) -> None:
     print("models cached under HF hub cache", flush=True)
 
 
+def _parse_env_file(path: Path) -> dict[str, str]:
+    """Parse ``KEY=VALUE`` lines (comments / blanks skipped)."""
+    values: dict[str, str] = {}
+    if not path.is_file():
+        return values
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if not key:
+            continue
+        values[key] = value.strip().strip("'").strip('"')
+    return values
+
+
+def find_host_env(*, explicit: Path | None = None) -> Path | None:
+    """Host project ``.env`` when this repo is vendored (``…/vendor/page-ocr``).
+
+    Order: ``explicit`` → ``PAGE_OCR_HOST_ENV`` → ``<repo>/../../.env`` → ``<repo>/../.env``.
+    """
+    if explicit is not None:
+        return explicit if explicit.is_file() else None
+    env_override = (os.environ.get("PAGE_OCR_HOST_ENV") or "").strip()
+    if env_override:
+        path = Path(env_override)
+        return path if path.is_file() else None
+    root = _repo_root()
+    for candidate in (root.parent.parent / ".env", root.parent / ".env"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def sync_dotenv_from_host(
+    *,
+    host_env: Path | None = None,
+    dest: Path | None = None,
+    template: Path | None = None,
+) -> Path | None:
+    """Write this package's ``.env`` from a host ``.env`` using ``.env.example`` keys.
+
+    For each key in the template, take the host value when present, else the
+    template default. Comments from the template are preserved. Returns the
+    written path, or ``None`` when there is no host file / template.
+    """
+    root = _repo_root()
+    source = host_env if host_env is not None else find_host_env()
+    example = template or (root / ".env.example")
+    target = dest or (root / ".env")
+    if source is None or not example.is_file():
+        return None
+
+    host_values = _parse_env_file(source)
+    lines_out: list[str] = [
+        f"# Generated from host {source} (keys from {example.name}). Do not commit.",
+        "",
+    ]
+    wrote = 0
+    for raw in example.read_text(encoding="utf-8").splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            lines_out.append(raw)
+            continue
+        key, _, default = stripped.partition("=")
+        key = key.strip()
+        if key in host_values:
+            lines_out.append(f"{key}={host_values[key]}")
+            wrote += 1
+        else:
+            lines_out.append(raw)
+    # Keys present in host but not in the template that this package cares about.
+    for key in ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"):
+        if key in host_values and not any(line.startswith(f"{key}=") for line in lines_out):
+            lines_out.append(f"{key}={host_values[key]}")
+            wrote += 1
+
+    target.write_text("\n".join(lines_out).rstrip() + "\n", encoding="utf-8")
+    print(f"synced {wrote} env value(s) from {source} → {target}", flush=True)
+    return target
+
+
 def write_env_example_hint() -> None:
-    example = _repo_root() / ".env.example"
-    if example.is_file():
-        print(f"copy {example} → .env and set PAGE_OCR_* as needed", flush=True)
+    root = _repo_root()
+    env_path = root / ".env"
+    example = root / ".env.example"
+    if env_path.is_file():
+        print(f"using {env_path}", flush=True)
+    elif example.is_file():
+        print(
+            f"no .env yet; sync from the host project .env on install, "
+            f"or copy {example} → .env",
+            flush=True,
+        )
 
 
 def load_dotenv(path: Path | None = None) -> Path | None:
@@ -172,14 +263,8 @@ def load_dotenv(path: Path | None = None) -> Path | None:
     env_path = path or (_repo_root() / ".env")
     if not env_path.is_file():
         return None
-    for raw in env_path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip().strip("'").strip('"')
-        if key and key not in os.environ:
+    for key, value in _parse_env_file(env_path).items():
+        if key not in os.environ:
             os.environ[key] = value
     return env_path
 
@@ -317,7 +402,13 @@ def _add_install_flags(inst: argparse.ArgumentParser) -> None:
         "--env-file",
         type=Path,
         default=None,
-        help="env file for Modal deploy (default: <repo>/.env)",
+        help="env file for Modal deploy (default: <repo>/.env after host sync)",
+    )
+    inst.add_argument(
+        "--from-env",
+        type=Path,
+        default=None,
+        help="host project .env to sync into this package .env (default: auto-detect vendor parent)",
     )
 
 
@@ -342,12 +433,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--env-file",
         type=Path,
         default=None,
-        help="env file (default: <repo>/.env)",
+        help="env file (default: <repo>/.env after host sync)",
+    )
+    dep.add_argument(
+        "--from-env",
+        type=Path,
+        default=None,
+        help="host project .env to sync into this package .env (default: auto-detect vendor parent)",
     )
     return p
 
 
+def _sync_env_before_run(args: argparse.Namespace) -> None:
+    """Fill ``<repo>/.env`` from the host project when vendored / ``--from-env`` is set."""
+    host = find_host_env(explicit=getattr(args, "from_env", None))
+    if host is None:
+        return
+    sync_dotenv_from_host(host_env=host)
+
+
 def run_install(args: argparse.Namespace) -> int:
+    _sync_env_before_run(args)
+    load_dotenv()
     if args.all:
         args.package = True
         args.local = True
@@ -410,6 +517,7 @@ def run_install(args: argparse.Namespace) -> int:
 
 def run_deploy(args: argparse.Namespace) -> int:
     """``page-ocr deploy`` → install Modal client if needed, then deploy the app."""
+    _sync_env_before_run(args)
     root = _repo_root()
     _run([sys.executable, "-m", "pip", "install", "--upgrade", "-e", str(root)])
     install_python_deps(local=False, modal=True)

@@ -12,7 +12,9 @@ From this repo root (works as a git submodule):
 
 ```bash
 chmod +x install.sh
-cp .env.example .env               # fill PAGE_OCR_* and MODAL_TOKEN_* for cloud
+# Vendored under <host>/vendor/page-ocr: install/deploy sync PAGE_OCR_* /
+# MODAL_TOKEN_* from the host .env into ./.env automatically.
+# Standalone: cp .env.example .env, or pass --from-env /path/to/host.env
 ./install.sh --all                 # package + local OCR runtime + PDF/DjVu tools + models
 # or pick pieces:
 ./install.sh --local --system      # Python deps + pdftoppm/ddjvu
@@ -29,6 +31,8 @@ page-ocr install --all
 page-ocr deploy                    # modal deploy -m page_ocr.modal_app
 python -m page_ocr install --help
 ```
+
+Host project helper: `make sync-vendor-env` (also from `make setup`).
 
 ## Layout
 
