@@ -488,7 +488,13 @@ def run_install(args: argparse.Namespace) -> int:
 
     if args.package:
         root = _repo_root()
-        _run([sys.executable, "-m", "pip", "install", "--upgrade", "-e", str(root)])
+        if _tree_writable(root / "src"):
+            _run([sys.executable, "-m", "pip", "install", "--upgrade", "-e", str(root)])
+        else:
+            print(
+                f"skip pip install -e {root} (read-only tree); using PYTHONPATH=src",
+                flush=True,
+            )
 
     if args.local or args.modal:
         install_python_deps(local=args.local, modal=args.modal)
@@ -515,12 +521,39 @@ def run_install(args: argparse.Namespace) -> int:
     return 0
 
 
+def _tree_writable(path: Path) -> bool:
+    """True when ``path`` can accept new files (false for docker ``:ro`` mounts)."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".page_ocr_write_probe"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 def run_deploy(args: argparse.Namespace) -> int:
-    """``page-ocr deploy`` → install Modal client if needed, then deploy the app."""
+    """``page-ocr deploy`` → install Modal client if needed, then deploy the app.
+
+    Skips ``pip install -e`` when the repo tree is read-only (compose mounts
+    ``vendor/page-ocr:ro``). ``deploy_modal`` puts ``src/`` on ``PYTHONPATH``.
+    """
     _sync_env_before_run(args)
     root = _repo_root()
-    _run([sys.executable, "-m", "pip", "install", "--upgrade", "-e", str(root)])
-    install_python_deps(local=False, modal=True)
+    if _tree_writable(root / "src"):
+        _run([sys.executable, "-m", "pip", "install", "--upgrade", "-e", str(root)])
+    else:
+        print(
+            f"skip pip install -e {root} (read-only tree); using PYTHONPATH=src",
+            flush=True,
+        )
+    # Only ensure the Modal client — do not upgrade numpy/HF (breaks surya pins
+    # in the shared python image).
+    try:
+        import modal  # noqa: F401
+    except ImportError:
+        install_python_deps(local=False, modal=True)
     deploy_modal(env_file=args.env_file)
     print("page-ocr deploy done", flush=True)
     return 0

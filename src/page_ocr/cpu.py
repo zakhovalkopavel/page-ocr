@@ -29,8 +29,14 @@ def physical_cpu_count() -> int:
 
 
 def apply_cpu_defaults() -> dict[str, str]:
-    """Set Surya/llama env knobs when the caller has not already set them."""
-    threads = str(logical_cpu_count())
+    """Set Surya/llama env knobs when the caller has not already set them.
+
+    Default llama threads = **physical cores** (not SMT/logical). Extra SMT
+    threads often hurt single-page llama.cpp latency on laptops.
+    """
+    logical = logical_cpu_count()
+    physical = physical_cpu_count()
+    threads = str(physical)
     applied: dict[str, str] = {}
 
     def _setdefault(key: str, value: str) -> None:
@@ -44,6 +50,6 @@ def apply_cpu_defaults() -> dict[str, str]:
         os.environ["LLAMA_CPP_EXTRA_ARGS"] = f"--threads {threads} --threads-batch {threads}"
     applied["LLAMA_CPP_EXTRA_ARGS"] = os.environ["LLAMA_CPP_EXTRA_ARGS"]
     applied["SURYA_INFERENCE_PARALLEL"] = os.environ["SURYA_INFERENCE_PARALLEL"]
-    applied["logical_cpus"] = threads
-    applied["physical_cpus"] = str(physical_cpu_count())
+    applied["logical_cpus"] = str(logical)
+    applied["physical_cpus"] = str(physical)
     return applied

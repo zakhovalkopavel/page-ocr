@@ -55,8 +55,10 @@ install.sh        # bootstrap wrapper for servers
 | --- | --- |
 | `PAGE_OCR_BACKEND` | `local` \| `modal` |
 | `PAGE_OCR_ENGINE` | default `surya` |
-| `PAGE_OCR_MODEL` / `PAGE_OCR_QUANT` | model id, `bf16` \| `q8` |
+| `PAGE_OCR_MODEL` / `PAGE_OCR_QUANT` | model id; `bf16` \| `q8` (Modal: pick at call time) |
 | `PAGE_OCR_MODAL_APP` / `_CLASS` / `_GPU` | when backend=modal |
+
+Modal deploy registers one `PageOcr` class parameterized by `quant`. Redeploy once, then flip `PAGE_OCR_QUANT` (or pass `quant_override`) without redeploying — each quant warms its own GPU container.
 | `PAGE_OCR_MODAL_LLAMA_RELEASE` / `_FLAVOR` | Modal image bake |
 | `LLAMA_CPP_BINARY` | override llama-server path (default `/opt/llama-cpp/llama-server`) |
 | `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` | deploy/call |

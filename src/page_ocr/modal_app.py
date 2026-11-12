@@ -3,15 +3,29 @@
 Deploy:
   modal deploy -m page_ocr.modal_app
 
-Env: PAGE_OCR_MODAL_*, PAGE_OCR_MODEL, PAGE_OCR_QUANT, PAGE_OCR_MODAL_LLAMA_*, …
-"""
-from __future__ import annotations
+``PageOcr`` is parameterized by ``quant`` (``bf16`` | ``q8``). One deploy
+registers both; the client picks at call time via ``Cls(quant=…).ocr_page``.
+Each quant gets its own warm container (not both GGUFs in one VRAM).
 
+Env: PAGE_OCR_MODAL_*, PAGE_OCR_MODEL, PAGE_OCR_QUANT (default quant),
+PAGE_OCR_MODAL_LLAMA_*, …
+
+Note: do **not** use ``from __future__ import annotations`` here — Modal's
+``modal.parameter()`` needs real runtime types (``str``), not stringified
+annotations (breaks under Python 3.14 / postponed evaluation).
+"""
 import io
 import os
 from typing import Any
 
 import modal
+
+QUANT_FILES = {
+    "bf16": "surya-2.5.gguf",
+    "q8": "surya-2.5-Q8_0.gguf",
+}
+SUPPORTED_QUANTS = tuple(QUANT_FILES)
+MMPROJ_FILE = "surya-2.5-mmproj.gguf"
 
 
 def _require_env(name: str) -> str:
@@ -31,6 +45,11 @@ _LLAMA_RELEASE = _require_env("PAGE_OCR_MODAL_LLAMA_RELEASE")
 _LLAMA_FLAVOR = _require_env("PAGE_OCR_MODAL_LLAMA_FLAVOR")  # e.g. ubuntu-cuda-12.8-x64
 _CACHE = "/cache"
 
+if _QUANT not in QUANT_FILES:
+    raise RuntimeError(
+        f"PAGE_OCR_QUANT must be one of {sorted(QUANT_FILES)}, got {_QUANT!r}"
+    )
+
 if _GPU.lower() in {"none", "cpu", "off", "0"}:
     raise RuntimeError(
         "PAGE_OCR_MODAL_GPU must be a Modal GPU id (e.g. T4). "
@@ -39,7 +58,7 @@ if _GPU.lower() in {"none", "cpu", "off", "0"}:
 
 # CUDA llama-server on T4 (etc.) + forced llamacpp backend (never vLLM/Docker).
 # surya-ocr 0.23 requires torch>=2.7 and pillow>=10.2,<11.
-_DEPLOY_REV = "llamacpp-cuda-3"
+_DEPLOY_REV = "llamacpp-cuda-4-dual-quant"
 _LLAMA_TAR = f"llama-{_LLAMA_RELEASE}-bin-{_LLAMA_FLAVOR}.tar.gz"
 _CUDART_TAR = f"cudart-llama-{_LLAMA_RELEASE}-bin-{_LLAMA_FLAVOR}.tar.gz"
 _image = (
@@ -109,6 +128,9 @@ app = modal.App(_APP_NAME, image=_image)
 
 def _apply_model_env(model: str, quant: str) -> None:
     """Point Surya at CUDA llama-server + the configured HF GGUF repo / quant file."""
+    quant = quant.strip().lower()
+    if quant not in QUANT_FILES:
+        raise ValueError(f"PAGE_OCR_QUANT must be one of {sorted(QUANT_FILES)}, got {quant!r}")
     os.environ["PAGE_OCR_MODEL"] = model
     os.environ["PAGE_OCR_QUANT"] = quant
     os.environ["SURYA_INFERENCE_BACKEND"] = "llamacpp"
@@ -117,14 +139,8 @@ def _apply_model_env(model: str, quant: str) -> None:
     repo = model.strip()
     if "/" in repo:
         os.environ["SURYA_GGUF_REPO"] = repo
-    quant_files = {
-        "bf16": "surya-2.5.gguf",
-        "q8": "surya-2.5-Q8_0.gguf",
-    }
-    if quant not in quant_files:
-        raise ValueError(f"PAGE_OCR_QUANT must be one of {sorted(quant_files)}, got {quant!r}")
-    os.environ["SURYA_GGUF_MODEL_FILE"] = quant_files[quant]
-    os.environ["SURYA_GGUF_MMPROJ_FILE"] = "surya-2.5-mmproj.gguf"
+    os.environ["SURYA_GGUF_MODEL_FILE"] = QUANT_FILES[quant]
+    os.environ["SURYA_GGUF_MMPROJ_FILE"] = MMPROJ_FILE
     os.environ.setdefault("SURYA_HF_ONLINE", "1")
 
 
@@ -135,12 +151,18 @@ def _apply_model_env(model: str, quant: str) -> None:
     volumes={_CACHE: _volume},
 )
 class PageOcr:
-    """Warm page OCR recognizer (Surya engine) on Modal GPU; one PNG/JPEG per ``ocr_page`` call."""
+    """Warm page OCR recognizer (Surya) on Modal GPU.
+
+    Parameter ``quant`` selects which GGUF this container loads (``bf16`` or
+    ``q8``). Call as ``PageOcr(quant=\"q8\").ocr_page.remote(png)``.
+    """
+
+    quant: str = modal.parameter(default=_QUANT)
 
     @modal.enter()
     def load(self) -> None:
         model = (os.environ.get("PAGE_OCR_MODEL") or _MODEL).strip()
-        quant = (os.environ.get("PAGE_OCR_QUANT") or _QUANT).strip().lower()
+        quant = (self.quant or _QUANT).strip().lower()
         _apply_model_env(model, quant)
         from surya.inference import SuryaInferenceManager
         from surya.recognition import RecognitionPredictor
@@ -156,7 +178,7 @@ class PageOcr:
         settings.SURYA_GGUF_MMPROJ_FILE = os.environ["SURYA_GGUF_MMPROJ_FILE"]
 
         self.model_id = model
-        self.quant = quant
+        self.quant_id = quant
         self.deploy_rev = os.environ.get("PAGE_OCR_DEPLOY_REV", _DEPLOY_REV)
         self.gpu = os.environ.get("PAGE_OCR_MODAL_GPU", _GPU)
         # Eager-start llama-server + load GGUF here (not on the first page call).
@@ -185,7 +207,7 @@ class PageOcr:
             )
         return {
             "model": self.model_id,
-            "quant": self.quant,
+            "quant": self.quant_id,
             "deploy_rev": self.deploy_rev,
             "gpu": self.gpu,
             "elapsed_ms": int((time.perf_counter() - t0) * 1000),
@@ -193,10 +215,11 @@ class PageOcr:
         }
 
     @modal.method()
-    def health(self) -> dict[str, str]:
+    def health(self) -> dict[str, Any]:
         return {
             "model": self.model_id,
-            "quant": self.quant,
+            "quant": self.quant_id,
+            "supported_quants": list(SUPPORTED_QUANTS),
             "deploy_rev": self.deploy_rev,
             "gpu": self.gpu,
             "backend": "llamacpp",
